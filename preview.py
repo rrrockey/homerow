@@ -1,8 +1,3 @@
-"""Stage 1: open a camera, show live video, and measure the FPS we really get.
-
-Usage:  python preview.py [camera_index]
-Press q to quit.
-"""
 import sys
 import time
 
