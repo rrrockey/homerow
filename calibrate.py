@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 
 import layout
+from tracker import KeyboardTracker
 
 camera_index = int(sys.argv[1]) if len(sys.argv) > 1 else 0
 WINDOW = "homerow calibrate"
@@ -59,7 +60,7 @@ if not cap.isOpened():
 cv2.namedWindow(WINDOW)
 cv2.setMouseCallback(WINDOW, on_mouse)
 last_good = time.perf_counter()
-H = None
+tracker = None
 
 while True:
     ok, frame = cap.read()
@@ -70,9 +71,12 @@ while True:
     last_good = time.perf_counter()
 
     if len(clicks) == 4:
-        H = compute_homography()
+        if tracker is None:
+            # Remember this clean frame (before anything is drawn on it).
+            tracker = KeyboardTracker(frame, compute_homography())
+        H, inliers = tracker.update(frame)
         draw_grid(frame, H)
-        status = "s = save, r = redo, q = quit"
+        status = f"tracking ({inliers} matches)  s = save, r = redo, q = quit"
     else:
         names = ["top-left", "top-right", "bottom-right", "bottom-left"]
         status = f"click corner {len(clicks) + 1}/4: {names[len(clicks)]}"
@@ -88,11 +92,14 @@ while True:
         break
     if key == ord("r"):
         clicks.clear()
-        H = None
-    if key == ord("s") and H is not None:
+        tracker = None
+    if key == ord("s") and tracker is not None:
+        # Save the calibration and its reference frame; later stages rebuild
+        # the tracker from these.
         with open("calibration.json", "w") as f:
-            json.dump({"homography": H.tolist()}, f)
-        print("Saved calibration.json")
+            json.dump({"homography": tracker.H_calib.tolist()}, f)
+        cv2.imwrite("calibration_ref.png", tracker.ref_frame)
+        print("Saved calibration.json and calibration_ref.png")
 
 cap.release()
 cv2.destroyAllWindows()
