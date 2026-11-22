@@ -5,6 +5,8 @@ frames with, so a keypress can later be matched to the frame it happened on.
 
 Run it on its own to test:  python keylog.py     (press Esc to stop)
 """
+import multiprocessing
+import queue
 import time
 
 from pynput import keyboard
@@ -34,23 +36,56 @@ def key_name(key):
     return str(key).replace("Key.", "")
 
 
-class KeyLogger:
-    def __init__(self):
-        self.events = []  # (time, key_name, "down" | "up")
-        self._listener = keyboard.Listener(
-            on_press=lambda k: self._add(k, "down"),
-            on_release=lambda k: self._add(k, "up"),
-        )
+def _listen(out):
+    """Runs in the child process: forward every key event to the queue `out`."""
+    def add(key, action):
+        # Stamp immediately. perf_counter() is one system-wide clock on macOS,
+        # so these timestamps match the ones the parent puts on video frames.
+        out.put((time.perf_counter(), key_name(key), action))
 
-    def _add(self, key, action):
-        # Stamp immediately: the callback runs on pynput's own thread.
-        self.events.append((time.perf_counter(), key_name(key), action))
+    listener = keyboard.Listener(
+        on_press=lambda k: add(k, "down"),
+        on_release=lambda k: add(k, "up"),
+    )
+    listener.start()
+    listener.wait()
+    out.put(None)  # tell the parent the listener is up and running
+    listener.join()
+
+
+class KeyLogger:
+    """Captures key events in a separate process.
+
+    pynput's listener asks macOS to translate keycodes from a background thread.
+    macOS aborts the whole process (SIGTRAP) when that happens in a process that
+    also has a window open, as the session does with OpenCV. In its own process
+    it is safe.
+    """
+
+    def __init__(self):
+        ctx = multiprocessing.get_context("spawn")
+        self._queue = ctx.Queue()
+        self._process = ctx.Process(target=_listen, args=(self._queue,), daemon=True)
+        self._events = []
+
+    @property
+    def events(self):
+        """All (time, key_name, "down" | "up") events so far, oldest first."""
+        while True:
+            try:
+                self._events.append(self._queue.get_nowait())
+            except queue.Empty:
+                return self._events
 
     def start(self):
-        self._listener.start()
+        """Start capturing. Blocks until the listener is ready (about a second),
+        so call it before you need the first key."""
+        self._process.start()
+        self._queue.get(timeout=15)  # the "ready" signal
 
     def stop(self):
-        self._listener.stop()
+        self.events  # collect anything already sent
+        self._process.terminate()
 
 
 if __name__ == "__main__":
